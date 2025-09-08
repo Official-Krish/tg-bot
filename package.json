@@ -10,7 +10,11 @@
     "typescript": "^5"
   },
   "dependencies": {
+    "@prisma/client": "6.15.0",
     "@solana/web3.js": "^1.98.4",
+    "bs58": "^6.0.0",
+    "prisma": "^6.15.0",
+    "shamir-secret-sharing": "^0.0.4",
     "telegraf": "^4.16.3"
   }
 }

@@ -1,11 +1,13 @@
 import { clusterApiUrl, Connection, Keypair, PublicKey, sendAndConfirmTransaction, SystemProgram, Transaction } from "@solana/web3.js";
 import { Markup, Telegraf } from "telegraf";
 import { message } from "telegraf/filters";
+import { generateKeypair, getUserByTelegramId, sendSol } from "./services/wallet-service";
+import { decodePvtKey } from "./actions/PvtKeyDecypt";
+import { prisma } from "./lib/db";
 
 const  connection  = new  Connection ( clusterApiUrl ( "devnet" ),  "confirmed" );
 const bot = new Telegraf(process.env.BOT_TOKEN!);
 
-const USERS: Record<string, Keypair> = {};
 interface PendingRequestType {
     type: "SEND_SOL" | "RECEIVE_SOL";
     amount?: number;
@@ -13,8 +15,6 @@ interface PendingRequestType {
 }
 
 const PENDING_REQUESTS: Record<string, PendingRequestType> = {};
-
-const TRANSACTION_HISTORY: Record<string, Array<{ type: string; amount: number; to: string; date: Date }>> = {};
 
 const keyboard = Markup.inlineKeyboard([
     [
@@ -55,26 +55,24 @@ try {
 
     bot.action('generate_wallet', async (ctx) => {
         ctx.answerCbQuery("Generating your wallet...");
-        const keypair = Keypair.generate();
-        const userId = ctx.from?.id;
-        USERS[userId] = keypair;
-        ctx.sendMessage(`New wallet generated successfully for you with public key: ${keypair.publicKey.toBase58()}`, {
+        const user = await generateKeypair(ctx.from?.id!.toString()!);
+        ctx.sendMessage(`New wallet generated successfully for you with public key: ${user.publicKey}`, {
             parse_mode: 'Markdown',
             ...postWalletCreationKeyboard
         });
     });
 
-    bot.action('show_public_key', (ctx) => {
+    bot.action('show_public_key', async (ctx) => {
         ctx.answerCbQuery("Fetching your public key...");
         const userId = ctx.from?.id;
-        const keypair = USERS[userId];
-        if (!keypair) {
+        const user = await getUserByTelegramId(userId.toString());
+        if (!user) {
             return ctx.sendMessage("You don't have a wallet yet. Please generate one first.", {
                 parse_mode: 'Markdown',
                 ...onlyGenerateBoard
             });
         }
-        ctx.sendMessage(`Your public key is: ${keypair.publicKey.toBase58()}`, {
+        ctx.sendMessage(`Your public key is: ${user.publicKey}`, {
             parse_mode: 'Markdown',
             ...postWalletCreationKeyboard
         });
@@ -89,48 +87,50 @@ try {
     bot.action('show_balance', async (ctx) => {
         ctx.answerCbQuery("Fetching your balance...");
         const userId = ctx.from?.id;
-        const keypair = USERS[userId];
-        if (!keypair) {
+        const user = await getUserByTelegramId(userId.toString());
+        if (!user) {
             return ctx.sendMessage("You don't have a wallet yet. Please generate one first.", {
                 parse_mode: 'Markdown',
                 ...onlyGenerateBoard
             });
         }
-        const balance = await connection.getBalance(keypair.publicKey);
+        const balance = await connection.getBalance(new PublicKey(user.publicKey));
         ctx.sendMessage(`Your wallet balance is: ${balance / 1e9} SOL`, {
             parse_mode: 'Markdown',
             ...postWalletCreationKeyboard
         });
     });
 
-    bot.action('export_private_key', (ctx) => {
+    bot.action('export_private_key', async (ctx) => {
         ctx.answerCbQuery("Exporting your private key...");
         const userId = ctx.from?.id;
-        const keypair = USERS[userId];
-        if (!keypair) {
+        const pvtKey = await decodePvtKey(userId!.toString());
+        if (!pvtKey) {
             return ctx.sendMessage("You don't have a wallet yet. Please generate one first.", {
                 parse_mode: 'Markdown',
                 ...onlyGenerateBoard
             });
         }
-        const secretKey = Buffer.from(keypair.secretKey).toString('hex');
-        ctx.sendMessage(`Your private key (keep it secret!): \`${secretKey}\``, {
+        ctx.sendMessage(`Your private key (keep it secret!): \`${pvtKey}\``, {
             parse_mode: 'Markdown',
             ...postWalletCreationKeyboard
         });
     });
 
-    bot.action('transaction_history', (ctx) => {
+    bot.action('transaction_history', async (ctx) => {
         ctx.answerCbQuery("Fetching your transaction history...");
         const userId = ctx.from?.id;
-        const keypair = USERS[userId];
-        if (!keypair) {
+        const user = await getUserByTelegramId(userId.toString());
+        if (!user) {
             return ctx.sendMessage("You don't have a wallet yet. Please generate one first.", {
                 parse_mode: 'Markdown',
                 ...onlyGenerateBoard
             });
         }
-        const history = TRANSACTION_HISTORY[userId];
+        const history = await prisma.transaction.findMany({
+            where: { userId: user.id },
+            orderBy: { date: 'desc' },
+        })
         if (!history || history.length === 0) {
             return ctx.sendMessage("You have no transaction history.", {
                 parse_mode: 'Markdown',
@@ -159,10 +159,11 @@ try {
     bot.on(message("text"), async (ctx) => {
         const userId = ctx.from?.id;
         if (!userId) return;
+        const user = await getUserByTelegramId(userId.toString());
 
         const pendingRequest = PENDING_REQUESTS[userId];
         
-        if (pendingRequest && USERS[userId]) {
+        if (pendingRequest && user) {
             if (pendingRequest.type === "SEND_SOL" && !pendingRequest.to) {
                 const recipientPubKey = ctx.message.text.trim();
                 try {
@@ -187,7 +188,7 @@ try {
                 
                 try {
                     pendingRequest.amount = amount;
-                    const senderBalance = await connection.getBalance(USERS[userId].publicKey) / 1e9;
+                    const senderBalance = await connection.getBalance(new PublicKey(user.publicKey)) / 1e9;
                     
                     if (senderBalance < (amount + 0.0002)) {
                         delete PENDING_REQUESTS[userId];
@@ -197,45 +198,9 @@ try {
                         });
                     }
                     
-                    const recipientPubKey = new PublicKey(pendingRequest.to);
-                    const senderKeypair = USERS[userId];
-                    const transferInstruction = SystemProgram.transfer({
-                        fromPubkey: senderKeypair.publicKey,
-                        toPubkey: recipientPubKey,
-                        lamports: amount * 1e9,
-                    });
-                    
-                    const transaction = new Transaction().add(transferInstruction);
-                    transaction.feePayer = senderKeypair.publicKey;
-                    let { blockhash } = await connection.getLatestBlockhash();
-                    transaction.recentBlockhash = blockhash;
-                    transaction.sign(senderKeypair);
-                    
-                    await sendAndConfirmTransaction(
-                        connection,
-                        transaction,
-                        [senderKeypair]
-                    );
+                    await sendSol(pendingRequest.to, user, amount);
 
                     delete PENDING_REQUESTS[userId];
-                    TRANSACTION_HISTORY[userId] = TRANSACTION_HISTORY[userId] || [];
-                    TRANSACTION_HISTORY[userId].push({
-                        type: "SEND_SOL",
-                        amount,
-                        to: pendingRequest.to,
-                        date: new Date(),
-                    });
-
-                    const recipientId = Object.keys(USERS).find(id => USERS[id]!.publicKey.toBase58() === pendingRequest.to);
-                    if (recipientId) {
-                        TRANSACTION_HISTORY[recipientId] = TRANSACTION_HISTORY[recipientId] || [];
-                        TRANSACTION_HISTORY[recipientId].push({
-                            type: "RECEIVE_SOL",
-                            amount,
-                            to: senderKeypair.publicKey.toBase58(),
-                            date: new Date(),
-                        });
-                    }
                     
                     ctx.sendMessage(`Successfully sent ${amount} SOL to ${pendingRequest.to}!`, {
                         parse_mode: 'Markdown',
@@ -254,12 +219,12 @@ try {
             }
         }
         
-        if (!USERS[userId]) {
+        if (!user) {
             const privateKeyHex = ctx.message.text.trim();
             try {
+                await generateKeypair(userId.toString(), privateKeyHex);
                 const secretKey = Uint8Array.from(Buffer.from(privateKeyHex, 'hex'));
                 const keypair = Keypair.fromSecretKey(secretKey);
-                USERS[userId] = keypair;
                 ctx.sendMessage(`Wallet imported successfully! Your public key is: ${keypair.publicKey.toBase58()}`, {
                     parse_mode: 'Markdown',
                     ...postWalletCreationKeyboard
@@ -271,7 +236,7 @@ try {
             }
         }
     });
-}catch (error) {
+} catch (error) {
     console.error(error);
 }
 
