@@ -1,11 +1,12 @@
-import { clusterApiUrl, Connection, Keypair, PublicKey, sendAndConfirmTransaction, SystemProgram, Transaction } from "@solana/web3.js";
+import { clusterApiUrl, Connection, Keypair, PublicKey } from "@solana/web3.js";
 import { Markup, Telegraf } from "telegraf";
 import { message } from "telegraf/filters";
 import { generateKeypair, getUserByTelegramId, sendSol } from "./services/wallet-service";
 import { decodePvtKey } from "./actions/PvtKeyDecypt";
 import { prisma } from "./lib/db";
+import bs58 from "bs58";
 
-const  connection  = new  Connection ( clusterApiUrl ( "devnet" ),  "confirmed" );
+const  connection  = new  Connection (clusterApiUrl ('devnet'),  'confirmed' );
 const bot = new Telegraf(process.env.BOT_TOKEN!);
 
 interface PendingRequestType {
@@ -56,6 +57,12 @@ try {
     bot.action('generate_wallet', async (ctx) => {
         ctx.answerCbQuery("Generating your wallet...");
         const user = await generateKeypair(ctx.from?.id!.toString()!);
+        if (!user) {
+            return ctx.sendMessage("You already have a wallet. Please use the options below.", {
+                parse_mode: 'Markdown',
+                ...postWalletCreationKeyboard
+            });
+        }
         ctx.sendMessage(`New wallet generated successfully for you with public key: ${user.publicKey}`, {
             parse_mode: 'Markdown',
             ...postWalletCreationKeyboard
@@ -222,8 +229,9 @@ try {
         if (!user) {
             const privateKeyHex = ctx.message.text.trim();
             try {
-                await generateKeypair(userId.toString(), privateKeyHex);
-                const secretKey = Uint8Array.from(Buffer.from(privateKeyHex, 'hex'));
+                const secretKeyBuffer = Buffer.from(privateKeyHex, 'hex');
+                await generateKeypair(userId.toString(), bs58.encode(secretKeyBuffer));
+                const secretKey = Uint8Array.from(secretKeyBuffer);
                 const keypair = Keypair.fromSecretKey(secretKey);
                 ctx.sendMessage(`Wallet imported successfully! Your public key is: ${keypair.publicKey.toBase58()}`, {
                     parse_mode: 'Markdown',
@@ -234,6 +242,12 @@ try {
                     parse_mode: 'Markdown',
                 });
             }
+        }
+        if(!pendingRequest && user){
+            ctx.sendMessage("I didn't understand that. Please choose an option from the menu.", {
+                parse_mode: 'Markdown',
+                ...postWalletCreationKeyboard
+            });
         }
     });
 } catch (error) {

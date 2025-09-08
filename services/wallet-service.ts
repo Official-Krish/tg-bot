@@ -3,6 +3,7 @@ import { prisma } from "../lib/db";
 import { PvtKeyEncryption } from "../actions/PvtKeyMngmt";
 import { clusterApiUrl, Connection, sendAndConfirmTransaction } from "@solana/web3.js";
 import { decodePvtKey } from "../actions/PvtKeyDecypt";
+import bs58 from "bs58";
 
 const  connection  = new  Connection ( clusterApiUrl ( "devnet" ),  "confirmed" );
 
@@ -18,7 +19,7 @@ interface User {
 export async function generateKeypair(userId: string, pvtkey?: string) {
     try{
         const keypair = Keypair.generate();
-        const { share1String, share2String, share3String } = await PvtKeyEncryption(pvtkey ? pvtkey : Buffer.from(keypair.secretKey).toString('hex'));
+        const { share1String, share2String, share3String } = await PvtKeyEncryption(pvtkey ? pvtkey : bs58.encode(keypair.secretKey));
         const user = await prisma.user.create({
             data: {
                 telegramId: userId,
@@ -30,7 +31,7 @@ export async function generateKeypair(userId: string, pvtkey?: string) {
         });
         return user;
     } catch (error) {
-        throw new Error("Error generating keypair: " + error);
+        console.error("Error generating keypair: " + error);
     }
 };
 
@@ -47,7 +48,7 @@ export async function getUserByTelegramId(telegramId: string) {
             return null;
         }
     } catch (error) {
-        throw new Error("Error fetching user: " + error);
+        console.error("Error fetching user: " + error);
     }
 }
 
@@ -85,6 +86,6 @@ export async function sendSol(toPublicKey: string, user: User, amount: number) {
             },
         });
     } catch (error) {
-        throw new Error("Error sending SOL: " + error);
+        console.error("Error sending SOL: " + error);
     }
 }

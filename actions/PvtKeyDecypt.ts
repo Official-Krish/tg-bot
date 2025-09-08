@@ -1,4 +1,3 @@
-import bs58 from "bs58";
 import { prisma } from "../lib/db";
 import { combineSecret } from "../services/keyShardingService";
 
@@ -20,11 +19,11 @@ export async function decodePvtKey(userId: string){
         const share3 = new Uint8Array(Buffer.from(shares.pvtKeyShare3, 'hex'))
 
         const res = await combineSecret([
-        share1,
-        share2,
-        share3,
+            share1,
+            share2,
+            share3,
         ])
-        const privateKey = bs58.encode(res)
+        const privateKey = Buffer.from(res).toString('hex');
         return privateKey;
     } catch (error) {
         throw new Error("Error decoding private key: " + error);
